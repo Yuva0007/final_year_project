@@ -35,7 +35,7 @@ def generateclip(s):
         if matched:
             clip = VideoFileClip(os.path.join(alphabet_dir, matched))
             original_duration = clip.duration
-            clip = clip.with_duration(min(2, clip.duration))
+            # clip = clip.with_duration(min(2, clip.duration))
             print(
                 "[test01.generateclip] token:",
                 token,
