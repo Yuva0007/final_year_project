@@ -1,5 +1,5 @@
 from conf import SAMPLE_INPUTS, SAMPLE_OUTPUTS
-from moviepy import CompositeVideoClip, VideoFileClip
+from moviepy import VideoFileClip, concatenate_videoclips
 from moviepy.video import fx as vfx
 import glob
 import os
@@ -7,12 +7,18 @@ import os
 
 def generateclip(s):
     tokens = []
+
+    # Convert input text into individual alphabet tokens
     for raw_token in s.split(" "):
         token = raw_token.strip()
+
         if not token:
             continue
+
         cleaned = token.lower()
+
         if cleaned.isalpha():
+            # Convert words into individual letters
             if len(cleaned) > 1:
                 tokens.extend(list(cleaned))
             else:
@@ -22,75 +28,116 @@ def generateclip(s):
 
     print("[test01.generateclip] tokens:", tokens)
     print("[test01.generateclip] token_count:", len(tokens))
+
     clips = []
 
-    alphabet_dir = os.path.join(SAMPLE_INPUTS, 'alphabets')
+    alphabet_dir = os.path.join(SAMPLE_INPUTS, "alphabets")
+
+    # Find alphabet videos
     os.chdir(alphabet_dir)
+
     for token in tokens:
+
         matched = None
+
         for file in glob.glob("*.mp4"):
+
             if token.lower() == os.path.splitext(file)[0].lower():
                 matched = file
                 break
+
         if matched:
-            clip = VideoFileClip(os.path.join(alphabet_dir, matched))
-            original_duration = clip.duration
-            # clip = clip.with_duration(min(2, clip.duration))
+
+            video_path = os.path.join(alphabet_dir, matched)
+
+            # Load the complete alphabet video
+            clip = VideoFileClip(video_path)
+
             print(
                 "[test01.generateclip] token:",
                 token,
                 "file:",
                 matched,
                 "duration:",
-                original_duration,
-                "used_duration:",
-                clip.duration,
+                clip.duration
             )
-            clip = clip.with_effects([vfx.FadeIn(0.05), vfx.FadeOut(0.05)])
-            clips.append(clip)
-        else:
-            print("[test01.generateclip] no alphabet clip matched token:", token)
 
+            # IMPORTANT:
+            # Do NOT limit the duration.
+            # Do NOT use FadeIn/FadeOut.
+            clips.append(clip)
+
+        else:
+
+            print(
+                "[test01.generateclip] no alphabet clip matched token:",
+                token
+            )
+
+    # No matching videos
     if not clips:
+        print("[test01.generateclip] No clips found.")
         return
 
-    transition = 0.2
+    # ---------------------------------------------------------
+    # Resize all clips to the same resolution
+    # ---------------------------------------------------------
+
     prepared_clips = []
+
     for index, clip in enumerate(clips):
-        clip = clip.with_effects([vfx.Resize((640, 480))])
 
-        if index == 0:
-            clip = clip.with_effects([vfx.FadeIn(0.15)])
-        elif index == len(clips) - 1:
-            clip = clip.with_effects([vfx.FadeOut(0.15)])
-        else:
-            clip = clip.with_effects([vfx.FadeIn(0.15), vfx.FadeOut(0.15)])
+        resized_clip = clip.with_effects([
+            vfx.Resize((640, 480))
+        ])
 
-        prepared_clips.append(clip)
+        prepared_clips.append(resized_clip)
 
-    composite_clips = []
-    start_time = 0.0
-    for index, clip in enumerate(prepared_clips):
-        clip_start = 0.0 if index == 0 else start_time - transition
-        composite_clips.append(clip.with_start(clip_start))
-        start_time = clip_start + clip.duration
         print(
-            "[test01.generateclip] timeline index:",
+            "[test01.generateclip] prepared clip:",
             index,
-            "clip_start:",
-            clip_start,
-            "clip_duration:",
-            clip.duration,
-            "next_start_time:",
-            start_time,
+            "duration:",
+            resized_clip.duration
         )
 
-    final_clip = CompositeVideoClip(composite_clips, size=(640, 480))
-    final_clip = final_clip.with_duration(max((clip.start + clip.duration) for clip in composite_clips))
-    print("[test01.generateclip] final_duration:", final_clip.duration)
-    print("[test01.generateclip] expected_frame_count_at_24fps:", int(final_clip.duration * 24))
+    # ---------------------------------------------------------
+    # IMPORTANT:
+    # Concatenate videos directly.
+    #
+    # There is:
+    # - NO overlap
+    # - NO transition
+    # - NO fade
+    # - NO black gap
+    #
+    # Each video plays completely.
+    # ---------------------------------------------------------
+
+    final_clip = concatenate_videoclips(
+        prepared_clips,
+        method="compose"
+    )
+
+    print(
+        "[test01.generateclip] final_duration:",
+        final_clip.duration
+    )
+
+    print(
+        "[test01.generateclip] expected_frame_count_at_24fps:",
+        int(final_clip.duration * 24)
+    )
+
+    # ---------------------------------------------------------
+    # Write final video
+    # ---------------------------------------------------------
+
     os.chdir(SAMPLE_OUTPUTS)
-    print("[test01.generateclip] writing output clipg.mp4")
+
+    print(
+        "[test01.generateclip] writing output clipg.mp4"
+    )
+
     final_clip.write_videofile(
         "clipg.mp4",
         codec="libx264",
@@ -99,6 +146,23 @@ def generateclip(s):
         fps=24,
         logger=None,
     )
-    print("[test01.generateclip] finished writing output clipg.mp4")
 
+    print(
+        "[test01.generateclip] finished writing output clipg.mp4"
+    )
+
+    # ---------------------------------------------------------
+    # Close videos
+    # ---------------------------------------------------------
+
+    final_clip.close()
+
+    for clip in prepared_clips:
+        clip.close()
+
+    # Return to input directory
     os.chdir(SAMPLE_INPUTS)
+
+    print(
+        "[test01.generateclip] video generation completed successfully"
+    )
