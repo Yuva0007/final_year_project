@@ -1,6 +1,7 @@
 const express = require("express");
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const { Console } = require("console");
 const app = express();
 const path = require('path');
@@ -12,17 +13,154 @@ app.use(express.json());
 app.set('view engine', 'ejs');
 
 const port = process.env.PORT || 3000
+const usersFile = path.join(__dirname, 'data', 'users.json');
+const sessions = new Map();
 let inputLine = ""
 let done = false
 let dataString = ""
 let requiredData = ""
 var python = null
+
+function readUsers() {
+  try {
+    return JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function writeUsers(users) {
+  fs.mkdirSync(path.dirname(usersFile), { recursive: true });
+  fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function passwordMatches(password, storedPassword) {
+  const [salt, storedHash] = storedPassword.split(':');
+  if (!salt || !storedHash) return false;
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(storedHash, 'hex'));
+}
+
+function parseCookies(request) {
+  return (request.headers.cookie || '').split(';').reduce((cookies, item) => {
+    const separator = item.indexOf('=');
+    if (separator === -1) return cookies;
+    const key = item.slice(0, separator).trim();
+    const value = item.slice(separator + 1).trim();
+    cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function getCurrentUser(request) {
+  const sessionId = parseCookies(request).voiceIslSession;
+  const email = sessionId ? sessions.get(sessionId) : null;
+  if (!email) return null;
+  return readUsers().find((user) => user.email === email) || null;
+}
+
+function setSessionCookie(response, email) {
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  sessions.set(sessionId, email);
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  response.setHeader('Set-Cookie', `voiceIslSession=${encodeURIComponent(sessionId)}; HttpOnly; Path=/; SameSite=Lax${secure}`);
+}
+
+function clearSessionCookie(request, response) {
+  const sessionId = parseCookies(request).voiceIslSession;
+  if (sessionId) sessions.delete(sessionId);
+  response.setHeader('Set-Cookie', 'voiceIslSession=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax');
+}
+
+function requireAuth(request, response, next) {
+  const user = getCurrentUser(request);
+  if (!user) {
+    if (request.accepts('html')) return response.redirect('/login');
+    return response.status(401).json({ error: 'Authentication required.' });
+  }
+  request.user = user;
+  next();
+}
+
+app.post('/api/signup', function (req, res) {
+  const username = String(req.body.username || '').trim();
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  if (!username || !email || password.length < 6) {
+    return res.status(400).json({ error: 'Username, email, and a password of at least 6 characters are required.' });
+  }
+
+  const users = readUsers();
+  if (users.some((user) => user.email === email)) {
+    return res.status(409).json({ error: 'An account with this email already exists.' });
+  }
+
+  users.push({ username, email, password: hashPassword(password) });
+  writeUsers(users);
+  setSessionCookie(res, email);
+  res.status(201).json({ username, email });
+});
+
+app.post('/api/login', function (req, res) {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  const user = readUsers().find((candidate) => candidate.email === email);
+  if (!user || !passwordMatches(password, user.password)) {
+    return res.status(401).json({ error: 'Email or password is incorrect.' });
+  }
+  setSessionCookie(res, email);
+  res.json({ username: user.username, email: user.email });
+});
+
+app.post('/api/logout', function (req, res) {
+  clearSessionCookie(req, res);
+  res.status(204).end();
+});
+
+app.get('/api/me', function (req, res) {
+  const user = getCurrentUser(req);
+  if (!user) return res.json({ authenticated: false });
+  res.json({ authenticated: true, username: user.username, email: user.email });
+});
+
+app.post('/api/change-password', requireAuth, function (req, res) {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const newPassword = String(req.body.password || '');
+  if (email && email !== req.user.email) {
+    return res.status(400).json({ error: 'Email does not match the signed-in account.' });
+  }
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  }
+  const users = readUsers();
+  const user = users.find((candidate) => candidate.email === req.user.email);
+  user.password = hashPassword(newPassword);
+  writeUsers(users);
+  res.status(204).end();
+});
+
+app.post('/api/profile', requireAuth, function (req, res) {
+  const username = String(req.body.username || '').trim();
+  if (!username) return res.status(400).json({ error: 'Display name is required.' });
+  const users = readUsers();
+  const user = users.find((candidate) => candidate.email === req.user.email);
+  user.username = username;
+  writeUsers(users);
+  res.json({ username, email: user.email });
+});
+
 //static images file
 app.use(express.static('public'));
 app.use('/img', express.static('images'));
 
 // Speech generation page
-app.get('/speech', function (req, res) {
+app.get('/speech', requireAuth, function (req, res) {
   res.sendFile(path.join(__dirname + '/s2t.html'));
 });
 
@@ -48,7 +186,7 @@ app.get("/login", function (req, res) {
 });
 
 // Change password page
-app.get("/change-password", function (req, res) {
+app.get("/change-password", requireAuth, function (req, res) {
   res.sendFile(path.join(__dirname + "/change-password.html"));
 });
 
@@ -58,16 +196,25 @@ app.get("/generate", function (req, res) {
 });
 
 // User profile page
-app.get("/profile", function (req, res) {
+app.get("/profile", requireAuth, function (req, res) {
   res.sendFile(path.join(__dirname + "/profile.html"));
 });
 
 //Final speach file done.html
-app.post("/speach", function (req, res) {
+app.post("/speach", requireAuth, function (req, res) {
   inputLine = req.body.textbox;
   dataString = "";
   requiredData = "";
   done = false;
+  let requestAborted = false;
+
+  req.on('aborted', function () {
+    requestAborted = true;
+    if (python != null) {
+      python.kill('SIGINT');
+      python = null;
+    }
+  });
 
   if (python != null) {
     python.kill('SIGINT');
@@ -75,6 +222,7 @@ app.post("/speach", function (req, res) {
   }
 
   isItDoneYet().then((msg) => {
+    if (requestAborted) return;
     console.log(msg);
     console.log(inputLine);
     console.log("data->\n" + dataString);
@@ -88,12 +236,13 @@ app.post("/speach", function (req, res) {
     done = true;
     res.render('result', { done: done, islSyntax: requiredData, normalSyntax: inputLine });
   }).catch((msg) => {
+    if (requestAborted) return;
     console.log(msg);
     res.status(500).send('Video generation failed. Please try again.');
   });
 });
 //done request video 
-app.get("/video", function (req, res) {
+app.get("/video", requireAuth, function (req, res) {
   
   //res.sendFile('/data/samples/output/clipg.mp4', { root: __dirname });  
   const range = req.headers.range;
@@ -133,8 +282,12 @@ app.get("/video", function (req, res) {
 
 //this the python promise 
 const isItDoneYet = () => new Promise((resolve, reject) => {
-  python = spawn(process.env.PYTHON_BIN || 'python3', ['speech_recog.py', inputLine])
+  const pythonCommand = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
+  python = spawn(pythonCommand, ['speech_recog.py', inputLine])
   let c = false
+  python.on('error', (error) => {
+    reject(new Error(`Unable to start Python (${pythonCommand}): ${error.message}`));
+  });
   python.stdout.on('data', function (data) {
     dataString += data.toString();
   })

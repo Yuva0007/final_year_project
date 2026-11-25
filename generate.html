@@ -66,12 +66,13 @@
     </div>
     <script>
         document.getElementById('continueBtn').addEventListener('click', function () {
-            const savedUser = localStorage.getItem('voiceIslUser');
-            if (savedUser) {
-                window.location.href = '/login';
-            } else {
+            fetch('/api/me').then(function (response) {
+                return response.json();
+            }).then(function (user) {
+                window.location.href = user.authenticated ? '/speech' : '/signup';
+            }).catch(function () {
                 window.location.href = '/signup';
-            }
+            });
         });
     </script>
 </body>

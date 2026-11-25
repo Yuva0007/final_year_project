@@ -117,10 +117,17 @@
                 alert('Please fill in all fields.');
                 return;
             }
-            const user = { username, email, password };
-            localStorage.setItem('voiceIslUser', JSON.stringify(user));
-            localStorage.setItem('voiceIslLoggedIn', 'true');
-            window.location.href = '/speech';
+            fetch('/api/signup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, email, password })
+            }).then(async function (response) {
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Unable to create account.');
+                window.location.href = '/speech';
+            }).catch(function (error) {
+                alert(error.message);
+            });
         });
     </script>
 </body>

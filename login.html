@@ -116,19 +116,17 @@
             event.preventDefault();
             const email = document.getElementById('email').value.trim();
             const password = document.getElementById('password').value;
-            const savedUser = localStorage.getItem('voiceIslUser');
-            if (!savedUser) {
-                alert('No account found. Please sign up first.');
-                window.location.href = '/signup';
-                return;
-            }
-            const user = JSON.parse(savedUser);
-            if (user.email === email && user.password === password) {
-                localStorage.setItem('voiceIslLoggedIn', 'true');
+            fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password })
+            }).then(async function (response) {
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Unable to log in.');
                 window.location.href = '/speech';
-            } else {
-                alert('Email or password is incorrect.');
-            }
+            }).catch(function (error) {
+                alert(error.message);
+            });
         });
     </script>
 </body>

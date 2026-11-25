@@ -269,6 +269,35 @@
             color: #f4efff;
         }
 
+        .progress-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 10px;
+            color: rgba(255, 255, 255, 0.82);
+            font-size: 0.9rem;
+        }
+
+        .progress-track {
+            height: 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.14);
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #8c54ff, #ff5c8a);
+            transition: width 0.3s ease;
+        }
+
+        .retry-btn {
+            display: none;
+            margin-top: 14px;
+        }
+
         .loader {
             position: relative;
             height: 12px;
@@ -348,12 +377,19 @@
                     </div>
                 </div>
                 <div class="action-row">
-                    <button id="generate-btn" class="btn btn-custom btn-generate" type="submit" onclick="myFunction()">Generate Video</button>
+                    <button id="generate-btn" class="btn btn-custom btn-generate" type="submit">Generate Video</button>
                     <button id="cancel-btn" class="btn btn-custom btn-cancel" type="button">Clear</button>
+                    <button id="cancel-generation-btn" class="btn btn-custom btn-cancel" type="button" hidden>Cancel Generation</button>
                 </div>
                 <div class="loadContain" id="loadContain">
-                    <h3>Generating video, please wait...</h3>
-                    <div class="loader"></div>
+                    <div class="progress-meta">
+                        <span id="progress-stage">Preparing generation...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-track" aria-label="Generation progress">
+                        <div class="progress-bar" id="progress-bar"></div>
+                    </div>
+                    <button id="retry-btn" class="btn btn-custom btn-cancel retry-btn" type="button">Retry Generation</button>
                 </div>
             </form>
         </section>
@@ -368,60 +404,153 @@
             return (words[0].charAt(0) + words[1].charAt(0)).toUpperCase();
         }
 
-        const savedUser = localStorage.getItem('voiceIslUser');
-        const loggedIn = localStorage.getItem('voiceIslLoggedIn');
-        if (!savedUser || loggedIn !== 'true') {
-            window.location.href = '/login';
-        } else {
-            const user = JSON.parse(savedUser);
+        fetch('/api/me').then(function (response) {
+            return response.json();
+        }).then(function (user) {
+            if (!user.authenticated) {
+                window.location.href = '/login';
+                return;
+            }
             const profileName = document.getElementById('profileName');
             const profileAvatar = document.getElementById('profileAvatar');
             const displayName = user.username || user.email || 'User';
             profileName.textContent = displayName;
             profileAvatar.textContent = getInitials(displayName);
-        }
-
-        document.getElementById('logoutBtn').addEventListener('click', function () {
-            localStorage.removeItem('voiceIslLoggedIn');
+        }).catch(function () {
             window.location.href = '/login';
+        });
+
+        document.getElementById('logoutBtn').addEventListener('click', function (event) {
+            event.stopPropagation();
+            fetch('/api/logout', { method: 'POST' }).then(function () {
+                window.location.href = '/login';
+            });
         });
 
         document.getElementById('profileCard').addEventListener('click', function () {
             window.location.href = '/profile';
         });
 
-        function myFunction() {
-            var x = document.getElementById('loadContain');
-            x.style.display = 'block';
+        const form = document.getElementById('speechForm');
+        const generateButton = document.getElementById('generate-btn');
+        const clearButton = document.getElementById('cancel-btn');
+        const cancelGenerationButton = document.getElementById('cancel-generation-btn');
+        const retryButton = document.getElementById('retry-btn');
+        const loadContainer = document.getElementById('loadContain');
+        const progressStage = document.getElementById('progress-stage');
+        const progressPercent = document.getElementById('progress-percent');
+        const progressBar = document.getElementById('progress-bar');
+        let generationController = null;
+        let progressTimers = [];
+
+        function updateProgress(percent, stage) {
+            progressBar.style.width = percent + '%';
+            progressPercent.textContent = percent + '%';
+            progressStage.textContent = stage;
         }
 
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        const recognition = new SpeechRecognition();
+        function stopProgressTimers() {
+            progressTimers.forEach(clearTimeout);
+            progressTimers = [];
+        }
+
+        function setProcessing(isProcessing) {
+            generateButton.disabled = isProcessing;
+            clearButton.disabled = isProcessing;
+            cancelGenerationButton.hidden = !isProcessing;
+            loadContainer.style.display = isProcessing || progressStage.textContent !== 'Preparing generation...' ? 'block' : 'none';
+        }
+
+        function startProgress() {
+            stopProgressTimers();
+            loadContainer.style.display = 'block';
+            updateProgress(12, 'Preparing text...');
+            progressTimers.push(setTimeout(function () { updateProgress(38, 'Converting speech to ISL...'); }, 700));
+            progressTimers.push(setTimeout(function () { updateProgress(68, 'Building sign language video...'); }, 2200));
+            progressTimers.push(setTimeout(function () { updateProgress(86, 'Finalizing video...'); }, 5000));
+        }
+
+        async function generateVideo() {
+            const text = textbox.val().trim();
+            if (!text) {
+                alert('Please enter or record some speech first.');
+                return;
+            }
+
+            generationController = new AbortController();
+            retryButton.style.display = 'none';
+            setProcessing(true);
+            startProgress();
+
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ textbox: text }),
+                    signal: generationController.signal
+                });
+                if (!response.ok) throw new Error('Video generation failed.');
+                updateProgress(100, 'Generation complete.');
+                document.open();
+                document.write(await response.text());
+                document.close();
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    updateProgress(0, 'Generation cancelled.');
+                } else {
+                    updateProgress(0, error.message);
+                    retryButton.style.display = 'block';
+                }
+                setProcessing(false);
+            } finally {
+                generationController = null;
+                stopProgressTimers();
+            }
+        }
+
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            generateVideo();
+        });
+
+        retryButton.addEventListener('click', generateVideo);
+
+        cancelGenerationButton.addEventListener('click', function () {
+            if (generationController) generationController.abort();
+        });
+
         const textbox = $('#textbox');
         const startbtn = $('#start-btn');
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            startbtn.prop('disabled', true).val('Microphone unavailable');
+        }
+        const recognition = SpeechRecognition ? new SpeechRecognition() : null;
         let displayedText = '';
         let pendingText = '';
         let isAnimating = false;
         let isRecording = false;
         const typingDelay = 8;
 
-        recognition.continuous = true;
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
+        if (recognition) {
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+        }
 
-        recognition.onstart = function () {
+        if (recognition) recognition.onstart = function () {
             isRecording = true;
             startbtn.val('Stop Recording');
             startbtn.addClass('btn-generate');
         };
 
-        recognition.onend = function () {
+        if (recognition) recognition.onend = function () {
             isRecording = false;
             startbtn.val('Start Recording');
             startbtn.removeClass('btn-generate');
         };
 
-        recognition.onerror = function () {
+        if (recognition) recognition.onerror = function () {
             isRecording = false;
             startbtn.val('Try Again');
             startbtn.removeClass('btn-generate');
@@ -454,7 +583,7 @@
             }
         }
 
-        recognition.onresult = function (event) {
+        if (recognition) recognition.onresult = function (event) {
             let transcript = '';
             for (let i = event.resultIndex; i < event.results.length; i++) {
                 const result = event.results[i];
@@ -468,6 +597,7 @@
         };
 
         $('#start-btn').click(function () {
+            if (!recognition) return;
             if (!isRecording) {
                 recognition.start();
             } else {

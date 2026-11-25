@@ -293,24 +293,29 @@
       return (words[0].charAt(0) + words[1].charAt(0)).toUpperCase();
     }
 
-    const savedUser = localStorage.getItem('voiceIslUser');
-    const loggedIn = localStorage.getItem('voiceIslLoggedIn');
-    if (!savedUser || loggedIn !== 'true') {
-      window.location.href = '/login';
-    } else {
-      const user = JSON.parse(savedUser);
+    fetch('/api/me').then(function (response) {
+      return response.json();
+    }).then(function (user) {
+      if (!user.authenticated) {
+        window.location.href = '/login';
+        return;
+      }
       const displayName = user.username || user.email || 'User';
       document.getElementById('profileName').textContent = displayName;
       document.getElementById('profileAvatar').textContent = getInitials(displayName);
-    }
+    }).catch(function () {
+      window.location.href = '/login';
+    });
 
     document.getElementById('profileCard').addEventListener('click', function () {
       window.location.href = '/profile';
     });
 
-    document.getElementById('logoutBtn').addEventListener('click', function () {
-      localStorage.removeItem('voiceIslLoggedIn');
-      window.location.href = '/login';
+    document.getElementById('logoutBtn').addEventListener('click', function (event) {
+      event.stopPropagation();
+      fetch('/api/logout', { method: 'POST' }).then(function () {
+        window.location.href = '/login';
+      });
     });
   </script>
 </body>
